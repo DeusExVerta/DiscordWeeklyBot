@@ -67,7 +67,7 @@ public class WeeklyBot extends ListenerAdapter
             super(s, s);
         }
     }
-    private final ScheduledExecutorService scheduler = new ScheduledThreadPoolExecutor(3);
+    
     private final ConcurrentHashMap<String, List<MeetingEvent>> meetingMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, List<SimpleRSSSubscriber>> rssMap = new ConcurrentHashMap<>();
 
@@ -228,7 +228,7 @@ public class WeeklyBot extends ListenerAdapter
                 tbd.cancelEvent();
                 //remove event from meetingMap
                 meetingMap.get(channelId).remove(tbd);
-                event.getHook().deleteOriginal().queue();
+                
                 break;
             case "updateEvent":
                 //identify meeting to be updated
@@ -288,7 +288,6 @@ public class WeeklyBot extends ListenerAdapter
                 event.getHook().deleteOriginal().queue();
                 break;
             case "delete":
-                event.getHook().deleteOriginal().queue();
                 break;
             default:
                 break;
@@ -349,45 +348,49 @@ public class WeeklyBot extends ListenerAdapter
             {
                 //name
                 String name = event.getOption("name").getAsString();
-
-                //month,day,hour,tz,intervalDays
-                int mo = enforceCalendarOption(event.getOption("month"), Calendar.MONTH);
-                
-                int dy = enforceCalendarOption(event.getOption("day"), Calendar.DAY_OF_MONTH);
-                
-                int yr = enforceCalendarOption(event.getOption("year"), Calendar.YEAR);
-                
-                int hr = enforceCalendarOption(event.getOption("hour"), Calendar.HOUR_OF_DAY);
-                
-                int mn = enforceCalendarOption(event.getOption("minute"), Calendar.MINUTE);
                 
                 OptionMapping tzOption = event.getOption("timezone");
                 
                 TimeZone tz = TimeZone.getTimeZone(
                   tzOption == null ? "America/New_York" : tzOption.getAsString()
                 );
+                Calendar c = Calendar.getInstance();
+                c.setTimeZone(tz);
+                //month,day,hour,tz,intervalDays
+                int yr = enforceCalendarOption(event.getOption("year"), c, Calendar.YEAR);
+                c.set(Calendar.YEAR, yr);
                 
+                int mo = enforceCalendarOption(event.getOption("month"), c, Calendar.MONTH);
+                c.set(Calendar.MONTH, mo);
+                
+                int dy = enforceCalendarOption(event.getOption("day"), c, Calendar.DAY_OF_MONTH);
+                c.set(Calendar.DAY_OF_MONTH,dy);
+                
+                int hr = enforceCalendarOption(event.getOption("hour"), c, Calendar.HOUR_OF_DAY);
+                c.set(Calendar.HOUR_OF_DAY, hr);
+                
+                int mn = enforceCalendarOption(event.getOption("minute"), c, Calendar.MINUTE);
+                c.set(Calendar.MINUTE, mn);
+                                
                 int interval = enforceOption(event.getOption("interval"), 1, 365, 7);
 
                 MessageChannel channel = event.getChannel();
                 MeetingEvent meeting = new MeetingEvent(
                   name,
                   interval,
-                  yr, mo, dy, hr, mn, tz,
+                  c,
                   channel,
                   event.getJDA());
                 eventList.add(meeting);
-                event.reply(String.format(
-                    "%s created %d/%d/%d @ %d/%d \n occuring every %d days (debug)",
-                    name,mo,dy,yr,hr,mn,interval)).queue();
-                /*event.reply(
+               
+                event.reply(
                   String.format(
                     "%s created %s \noccuring every %d days",
                     meeting.getName(),
                     meeting.getNextDate(),
                     meeting.getInterval()
                   )
-                ).queue();*/
+                ).queue();
             }
             else
             {
@@ -423,14 +426,13 @@ public class WeeklyBot extends ListenerAdapter
     private void createEventListMenu( GenericCommandInteractionEvent event, String actionString )
     {
         String channelId = event.getMessageChannel().getId();
-        if ( meetingMap.containsKey(channelId) )
+        if ( meetingMap.containsKey(channelId) && !meetingMap.get(channelId).isEmpty())
         {
             List<MeetingEvent> eventList = meetingMap.get(channelId);
             String userId = event.getUser().getId();
             event.reply(String.format("Select event to %s:", actionString))
               .addActionRow(eventListSelection(String.format("%s:%sEvent", userId, actionString),
                 eventList))
-              .setEphemeral(true)
               .queue();
         }
         else
@@ -457,9 +459,8 @@ public class WeeklyBot extends ListenerAdapter
         return eventMenuBuilder.build();
     }
     
-    private int enforceCalendarOption( OptionMapping option, int calendarField )
+    private int enforceCalendarOption( OptionMapping option, Calendar c, int calendarField)
     {
-        Calendar c = Calendar.getInstance();
         return enforceOption(option, c.getActualMinimum(calendarField), c.getActualMaximum(
           calendarField), c.get(calendarField));
     }

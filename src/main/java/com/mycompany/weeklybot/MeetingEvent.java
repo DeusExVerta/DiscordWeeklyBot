@@ -32,6 +32,7 @@ public class MeetingEvent implements Callable<Void>
     private final String channelId;
     private final ArrayList<String> attendeeIds = new ArrayList<>();
     private final JDA jda;
+    private final ScheduledExecutorService scheduler = new ScheduledThreadPoolExecutor(1);
     private ScheduledFuture<Void> nextFuture;
     
     MeetingEvent(String name,int interval,int yr,int mo,int dy,int hr,int mn,TimeZone tz,MessageChannel channel,JDA jda)
@@ -39,7 +40,7 @@ public class MeetingEvent implements Callable<Void>
         this(
           name,
           interval,
-          new Calendar.Builder().setCalendarType("iso8601").setDate(yr, mo, dy).setTimeOfDay(hr, mn, 0).setTimeZone(tz).build(),
+          new Calendar.Builder().setCalendarType("iso8601").setTimeZone(tz).setDate(yr, mo, dy).setTimeOfDay(hr, mn, 0).build(),
           channel,
           jda
           );   
@@ -58,7 +59,7 @@ public class MeetingEvent implements Callable<Void>
         }
         this.channelId = channel.getId();
         this.jda = jda;
-        nextFuture = jda.getGatewayPool().schedule(this,initialDelay, TimeUnit.MILLISECONDS);
+        nextFuture = scheduler.schedule(this,initialDelay, TimeUnit.MILLISECONDS);
     }
     
     @Override
@@ -69,7 +70,7 @@ public class MeetingEvent implements Callable<Void>
         jda.getChannelById(MessageChannel.class,channelId).sendMessage(
           notifyAttendees(messageBuilder,"starting now!").build()
         ).queue();
-        nextFuture = jda.getGatewayPool().schedule(this,intervalDays,TimeUnit.DAYS);
+        nextFuture = scheduler.schedule(this,intervalDays,TimeUnit.DAYS);
         nextDate.add(Calendar.DAY_OF_MONTH, intervalDays);
         return (null);
     }
