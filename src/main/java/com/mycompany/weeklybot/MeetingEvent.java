@@ -4,11 +4,12 @@
  * and open the template in the editor.
  */
 package com.mycompany.weeklybot;
+
+
 import java.util.Calendar;
 import java.util.concurrent.*;
 import java.util.ArrayList;
 import java.util.Objects;
-import java.util.TimeZone;
 
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.entities.MessageChannel;
@@ -17,100 +18,131 @@ import net.dv8tion.jda.api.MessageBuilder;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.entities.User;
 
-import java.text.SimpleDateFormat;
+import java.util.logging.*;
+
+import java.time.*;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 
 
 /**
  *
  * @author Gary Howard
  */
-public class MeetingEvent implements Callable<Void>
+public class MeetingEvent
 {
     private String name;
-    private final Calendar nextDate;
+    private final ZonedDateTime nextDate;
     private final int intervalDays;
     private final String channelId;
     private final ArrayList<String> attendeeIds = new ArrayList<>();
     private final JDA jda;
     private final ScheduledExecutorService scheduler = new ScheduledThreadPoolExecutor(1);
     private ScheduledFuture<Void> nextFuture;
-    
-    MeetingEvent(String name,int interval,int yr,int mo,int dy,int hr,int mn,TimeZone tz,MessageChannel channel,JDA jda)
+    private DateTimeFormatter sdf = DateTimeFormatter.ofPattern("MM/dd/YY '@' hh:mm a z");
+
+    protected class HostEvent implements Callable<Void>
+    {
+        @Override
+        public Void call()
+        {
+            Logger logger = Logger.getGlobal();
+            logger.info("HostEvent called");
+            MessageBuilder messageBuilder = new MessageBuilder();
+            jda.getChannelById(MessageChannel.class, channelId).sendMessage(
+              notifyAttendees(messageBuilder, "starting now!").build()
+            ).queue();
+            nextFuture = scheduler.schedule(new HostEvent(), intervalDays, TimeUnit.DAYS);
+            nextDate.plusDays(intervalDays);
+            return ( null );
+        }
+    }
+
+    MeetingEvent( String name, int interval, int yr, int mo, int dy, int hr, int mn, ZoneId tz,
+      MessageChannel channel, JDA jda )
     {
         this(
           name,
           interval,
-          new Calendar.Builder().setCalendarType("iso8601").setTimeZone(tz).setDate(yr, mo, dy).setTimeOfDay(hr, mn, 0).build(),
+          ZonedDateTime.of(yr,mo,dy,hr,mn,0,0,tz),
           channel,
           jda
-          );   
+        );
     }
-    MeetingEvent(String name, int interval, Calendar date, MessageChannel channel, JDA jda)
+
+    MeetingEvent( String name, int interval, ZonedDateTime date, MessageChannel channel, JDA jda )
     {
+        Logger logger = Logger.getGlobal();
+        ZonedDateTime now = ZonedDateTime.now(date.getZone());
+        logger.info(String.format("now is %s",sdf.format(now)));
         this.name = name;
-        this.nextDate = date;
+        ZonedDateTime tmpZDT = date;
+        logger.info(String.format("nextDate set to %s", sdf.format(tmpZDT)));
         //get delay until next occurence
-        int initialDelay = nextDate.compareTo(Calendar.getInstance());
+        long initialDelay = now.until(tmpZDT,ChronoUnit.SECONDS);
+        logger.info(String.format("Initial Delay is %d seconds", initialDelay));
         intervalDays = interval;
-        if(initialDelay<=0)
+        long sInterval = interval * ( 24 * 60 * 60 );//compute the interval between events in SECONDS
+        logger.info(String.format("Interval is %d seconds", initialDelay));
+        //if the event was scheduled in the past...
+        if ( tmpZDT.isBefore(now) )
         {
-            int msInterval = interval*24*60*60*1000;//compute MS interval
-            initialDelay = msInterval-(Math.abs(initialDelay)%msInterval);
+            logger.warning(String.format("Meeting scheduled %d seconds in the past", Math.abs(initialDelay)));
+            initialDelay = sInterval-(Math.abs(initialDelay)%sInterval);
+            nextDate=tmpZDT.plusSeconds(sInterval);
+        }
+        else
+        {
+            nextDate=tmpZDT;
         }
         this.channelId = channel.getId();
         this.jda = jda;
-        nextFuture = scheduler.schedule(this,initialDelay, TimeUnit.MILLISECONDS);
+        nextFuture = scheduler.schedule(new HostEvent(), initialDelay, TimeUnit.SECONDS);
+        logger.info(String.format("%s scheduled after %d seconds, with a(n) %d day interval", name, initialDelay, interval));
     }
-    
-    @Override
-    public Void call()
+
+    public boolean addAttendee( User user )
     {
-        //TODO: Build Message Embed.
-        MessageBuilder messageBuilder = new MessageBuilder();
-        jda.getChannelById(MessageChannel.class,channelId).sendMessage(
-          notifyAttendees(messageBuilder,"starting now!").build()
-        ).queue();
-        nextFuture = scheduler.schedule(this,intervalDays,TimeUnit.DAYS);
-        nextDate.add(Calendar.DAY_OF_MONTH, intervalDays);
-        return (null);
+        String id = user.getId();
+        if(!attendeeIds.contains(id))
+            return attendeeIds.add(id);
+        else
+            return false;
     }
-    
-    public boolean addAttendee(User user)
-    {
-        return attendeeIds.add(user.getId());
-    }
-    
-    public boolean removeAttendee(User user)
+
+    public boolean removeAttendee( User user )
     {
         return attendeeIds.remove(user.getId());
     }
-        
+
     public boolean cancelEvent()
     {
         MessageBuilder messageBuilder = new MessageBuilder();
-        jda.getChannelById(MessageChannel.class,channelId).sendMessage(
-          notifyAttendees(messageBuilder,"canceled").build()
+        jda.getChannelById(MessageChannel.class, channelId).sendMessage(
+          notifyAttendees(messageBuilder, "canceled").build()
         ).queue();
         return nextFuture.cancel(true);
     }
-    
-    public MessageBuilder notifyAttendees(MessageBuilder messageBuilder,String action)
+
+    public MessageBuilder notifyAttendees( MessageBuilder messageBuilder, String action )
     {
         messageBuilder.allowMentions(MentionType.USER);
-        if(!attendeeIds.isEmpty()) {
-            attendeeIds.forEach(id->{
-                messageBuilder.append("<@&").append(id).append(">");
+        if ( !attendeeIds.isEmpty() )
+        {
+            attendeeIds.forEach(id -> 
+            {
+                messageBuilder.append(User.fromId(id));
             });
         }
-        messageBuilder.append(String.format("%s is %s", name,action));
+        messageBuilder.append(String.format(" %s is %s", name, action));
         return messageBuilder;
     }
-    
+
     public String getName()
     {
         return name;
     }
-    
+
     String ToString()
     {
         return String.format("%s on %s with %d attendees",
@@ -118,21 +150,23 @@ public class MeetingEvent implements Callable<Void>
           this.getNextDate(),
           attendeeIds.size());
     }
+
     public String getNextDate()
     {
-        SimpleDateFormat sdf = new SimpleDateFormat("MM/dd/YY '@' hh:mm a z");      
-        return sdf.format(nextDate.getTime());
+        return sdf.format(nextDate);
     }
+
     public int getInterval()
     {
         return this.intervalDays;
     }
-    
+
     @Override
     public int hashCode()
     {
-       final int prime = 31;
-       return ((((name.hashCode()*prime)+intervalDays)*prime+channelId.hashCode())*prime+(int)nextFuture.getDelay(TimeUnit.MINUTES))*prime;
+        final int prime = 31;
+        return ( ( ( ( name.hashCode() * prime ) + intervalDays ) * prime + channelId.hashCode() ) *
+          prime + ( int ) nextFuture.getDelay(TimeUnit.MINUTES) ) * prime;
     }
 
     @Override

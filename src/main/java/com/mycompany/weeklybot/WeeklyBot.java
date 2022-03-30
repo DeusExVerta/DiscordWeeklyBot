@@ -37,6 +37,15 @@ import java.util.concurrent.ScheduledThreadPoolExecutor;
 
 import java.util.concurrent.ConcurrentHashMap;
 
+import java.time.*;
+
+import java.util.logging.*;
+
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoField;
+import java.time.temporal.TemporalField;
+import java.time.temporal.ValueRange;
+
 import static net.dv8tion.jda.api.interactions.commands.OptionType.*;
 
 /* TODO:
@@ -70,7 +79,7 @@ public class WeeklyBot extends ListenerAdapter
     
     private final ConcurrentHashMap<String, List<MeetingEvent>> meetingMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, List<SimpleRSSSubscriber>> rssMap = new ConcurrentHashMap<>();
-
+    private static Logger logger = Logger.getGlobal();
     /**
      * @param args the command line arguments
      *
@@ -79,6 +88,11 @@ public class WeeklyBot extends ListenerAdapter
      */
     public static void main( String[] args ) throws LoginException, FileNotFoundException, IOException
     {
+        
+        SimpleFormatter formatter = new SimpleFormatter();
+        StreamHandler handler = new StreamHandler(System.out,formatter);
+        handler.setLevel(Level.INFO);
+        logger.addHandler(handler);
         FileReader fin = new FileReader("./src/main/resources/config.txt");//read bot token from config.txt
         char[] c = new char[100];
         fin.read(c);
@@ -86,6 +100,7 @@ public class WeeklyBot extends ListenerAdapter
         JDA jda = JDABuilder.createLight(new String(c).split("token=")[1].trim(), EnumSet.noneOf(
           GatewayIntent.class)) // slash commands don't need any intents
           .addEventListeners(new WeeklyBot())
+          .setActivity(Activity.watching("You..."))
           .build();
 
         // These commands take up to an hour to be activated after creation/update/delete
@@ -157,6 +172,8 @@ public class WeeklyBot extends ListenerAdapter
             false)
           .addOption(STRING, "filter", "a list of words to filter for", false)
         );
+        
+        commands.addCommands(Commands.slash("now", "tells you the current date and time."));
 
         // Send the new set of commands to discord, this will override any existing global commands with the new set provided here
         commands.queue();
@@ -176,6 +193,9 @@ public class WeeklyBot extends ListenerAdapter
             case "say":
                 say(event, event.getOption("content").getAsString()); 
                 break;
+            case "now":
+                now(event);
+                break;
             case "leave":
                 leave(event);
                 break;
@@ -192,7 +212,11 @@ public class WeeklyBot extends ListenerAdapter
                 delete(event);
                 break;
             case "attend":
+                attend(event);
+                break;
             case "unattend":
+                unattend(event);
+                break;
             case "rsssub":
             case "rssunsub":
             default:
@@ -213,7 +237,6 @@ public class WeeklyBot extends ListenerAdapter
         {
             return;
         }
-        event.deferEdit().queue();
 
         switch ( type )
         {
@@ -228,14 +251,14 @@ public class WeeklyBot extends ListenerAdapter
                 tbd.cancelEvent();
                 //remove event from meetingMap
                 meetingMap.get(channelId).remove(tbd);
-                
                 break;
             case "updateEvent":
                 //identify meeting to be updated
                 tbd = identifyMeeting(
-                  event.getChannel().getId(),
-                  Integer.getInteger(event.getSelectedOptions().get(0).getValue())
+                  channelId,
+                  Integer.valueOf(event.getSelectedOptions().get(0).getValue())
                 );
+                event.reply("Update not currently supported.").queue();
                 //determine updates to make to the event.
                 //multiple selct menus...
                 //notify attendees of update
@@ -243,17 +266,29 @@ public class WeeklyBot extends ListenerAdapter
                 break;
             case "attendEvent":
                 tbd = identifyMeeting(
-                  event.getChannel().getId(),
-                  Integer.getInteger(event.getValues().get(0))
+                  channelId,
+                  Integer.valueOf(event.getSelectedOptions().get(0).getValue())
                 );
-                tbd.addAttendee(event.getUser());
+                if(tbd.addAttendee(event.getUser()))
+                {
+                    event.reply(String.format("You are now attending %s", tbd.getName())).queue();
+                }else
+                {
+                    event.reply(String.format("You were already attending %s", tbd.getName())).queue();
+                }
                 break;
             case "unattendEvent":
                 tbd = identifyMeeting(
-                  event.getChannel().getId(),
-                  Integer.getInteger(event.getValues().get(0))
+                  channelId,
+                  Integer.valueOf(event.getSelectedOptions().get(0).getValue())
                 );
-                tbd.removeAttendee(event.getUser());
+                if(tbd.removeAttendee(event.getUser()))
+                {
+                    event.reply(String.format("You are no longer attending %s", tbd.getName())).queue();
+                }else
+                {
+                    event.reply(String.format("You were not attending %s", tbd.getName())).queue();
+                }
                 break;
             case "updateRSSFilter":
             case "unsubRSS":
@@ -298,6 +333,12 @@ public class WeeklyBot extends ListenerAdapter
     {
         event.reply(content).queue(); // This requires no permissions!
     }
+    
+    public void now(SlashCommandInteractionEvent event)
+    {
+        DateTimeFormatter sdf = DateTimeFormatter.ofPattern("MM/dd/YY '@' hh:mm a z");
+        event.reply(sdf.format(ZonedDateTime.now())).queue();
+    }
 
     public void leave( SlashCommandInteractionEvent event )
     {
@@ -316,7 +357,7 @@ public class WeeklyBot extends ListenerAdapter
 
     public void prune( SlashCommandInteractionEvent event )
     {
-        int amount = enforceOption(event.getOption("amount"),2,200,100); // enforcement: must be between 2-200
+        int amount = (int)enforceOption(event.getOption("amount"),2,200,100); // enforcement: must be between 2-200
         String userId = event.getUser().getId();
         event.reply(String.format("This will delete %d messages.\nAre you sure?",amount)) // prompt the user with a button menu
           .addActionRow(
@@ -351,34 +392,35 @@ public class WeeklyBot extends ListenerAdapter
                 
                 OptionMapping tzOption = event.getOption("timezone");
                 
-                TimeZone tz = TimeZone.getTimeZone(
+                ZoneId tz = ZoneId.of(
                   tzOption == null ? "America/New_York" : tzOption.getAsString()
                 );
-                Calendar c = Calendar.getInstance();
-                c.setTimeZone(tz);
+                LocalDateTime ldt = LocalDateTime.now();
+                ZonedDateTime zdt = ldt.atZone(tz);
                 //month,day,hour,tz,intervalDays
-                int yr = enforceCalendarOption(event.getOption("year"), c, Calendar.YEAR);
-                c.set(Calendar.YEAR, yr);
+                zdt=zdt.withYear((int)enforceZDTOption(event.getOption("year"), zdt, ChronoField.YEAR));
                 
-                int mo = enforceCalendarOption(event.getOption("month"), c, Calendar.MONTH);
-                c.set(Calendar.MONTH, mo);
+                zdt=zdt.withMonth((int)enforceZDTOption(event.getOption("month"), zdt, ChronoField.MONTH_OF_YEAR));
                 
-                int dy = enforceCalendarOption(event.getOption("day"), c, Calendar.DAY_OF_MONTH);
-                c.set(Calendar.DAY_OF_MONTH,dy);
+                zdt = zdt.withDayOfMonth((int)enforceZDTOption(event.getOption("day"), zdt, ChronoField.DAY_OF_MONTH));
                 
-                int hr = enforceCalendarOption(event.getOption("hour"), c, Calendar.HOUR_OF_DAY);
-                c.set(Calendar.HOUR_OF_DAY, hr);
+                zdt = zdt.withHour((int)enforceZDTOption(event.getOption("hour"), zdt, ChronoField.HOUR_OF_DAY));
                 
-                int mn = enforceCalendarOption(event.getOption("minute"), c, Calendar.MINUTE);
-                c.set(Calendar.MINUTE, mn);
+                zdt = zdt.withMinute((int)enforceZDTOption(event.getOption("minute"), zdt, ChronoField.MINUTE_OF_HOUR));
                                 
-                int interval = enforceOption(event.getOption("interval"), 1, 365, 7);
-
+                int interval = (int)enforceOption(event.getOption("interval"), 1, 365, 7);
+                logger.info(
+                  String.format(
+                    "%s to be scheduled %s with %d interval",
+                    name,
+                    zdt.format(DateTimeFormatter.ISO_ZONED_DATE_TIME),
+                    interval
+                    ));
                 MessageChannel channel = event.getChannel();
                 MeetingEvent meeting = new MeetingEvent(
                   name,
                   interval,
-                  c,
+                  zdt,
                   channel,
                   event.getJDA());
                 eventList.add(meeting);
@@ -420,6 +462,8 @@ public class WeeklyBot extends ListenerAdapter
         createEventListMenu(event, "unattend");
     }
     
+    
+    
     /*
      * Creates and sends a select menu message for the given action.
      */
@@ -458,15 +502,26 @@ public class WeeklyBot extends ListenerAdapter
         }
         return eventMenuBuilder.build();
     }
-    
-    private int enforceCalendarOption( OptionMapping option, Calendar c, int calendarField)
+        
+    private long enforceZDTOption( OptionMapping option, ZonedDateTime zdt, TemporalField field)
     {
-        return enforceOption(option, c.getActualMinimum(calendarField), c.getActualMaximum(
-          calendarField), c.get(calendarField));
+        ValueRange range = zdt.range(field);
+        return enforceOption(option, range.getMinimum(), range.getMaximum(), zdt.get(field));
     }
+    
 
-    private int enforceOption( OptionMapping option, int min, int max, int base )
+    private long enforceOption( OptionMapping option, long min, long max, long base )
     {
+        logger.info(
+          String.format(
+            "%s == null ? %d : Math.min(%d, Math.max(%d, %d))",
+            option == null ? null:option,
+            base,
+            max,
+            min,
+            option == null ? null:option.getAsInt()
+            )
+        );
         return option == null ? base : Math.min(max, Math.max(min, option.getAsInt()));
     }
     
