@@ -237,7 +237,9 @@ public class WeeklyBot extends ListenerAdapter
         {
             return;
         }
-
+        
+        event.deferEdit().queue();
+        
         switch ( type )
         {
             case "deleteEvent":
@@ -258,7 +260,7 @@ public class WeeklyBot extends ListenerAdapter
                   channelId,
                   Integer.valueOf(event.getSelectedOptions().get(0).getValue())
                 );
-                event.reply("Update not currently supported.").queue();
+                event.getMessageChannel().sendMessage("Update not currently supported.").queue();
                 //determine updates to make to the event.
                 //multiple selct menus...
                 //notify attendees of update
@@ -271,10 +273,10 @@ public class WeeklyBot extends ListenerAdapter
                 );
                 if(tbd.addAttendee(event.getUser()))
                 {
-                    event.reply(String.format("You are now attending %s", tbd.getName())).queue();
+                    event.getMessageChannel().sendMessage(String.format("You are now attending %s", tbd.getName())).queue();
                 }else
                 {
-                    event.reply(String.format("You were already attending %s", tbd.getName())).queue();
+                    event.getMessageChannel().sendMessage(String.format("You were already attending %s", tbd.getName())).queue();
                 }
                 break;
             case "unattendEvent":
@@ -284,10 +286,10 @@ public class WeeklyBot extends ListenerAdapter
                 );
                 if(tbd.removeAttendee(event.getUser()))
                 {
-                    event.reply(String.format("You are no longer attending %s", tbd.getName())).queue();
+                    event.getMessageChannel().sendMessage(String.format("You are no longer attending %s", tbd.getName())).queue();
                 }else
                 {
-                    event.reply(String.format("You were not attending %s", tbd.getName())).queue();
+                    event.getMessageChannel().sendMessage(String.format("You were not attending %s", tbd.getName())).queue();
                 }
                 break;
             case "updateRSSFilter":
