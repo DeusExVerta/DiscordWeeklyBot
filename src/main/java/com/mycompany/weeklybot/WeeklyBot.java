@@ -229,11 +229,12 @@ public class WeeklyBot extends ListenerAdapter
     {
         String[] ids = event.getComponentId().split(":");
         String authorId = ids[0];
+        String userId = event.getUser().getId();
         String type = ids[1];
         MeetingEvent tbd;
         String channelId = event.getChannel().getId();
 
-        if ( !authorId.equals(event.getUser().getId()) )
+        if ( !authorId.equals(userId) )
         {
             return;
         }
@@ -267,11 +268,13 @@ public class WeeklyBot extends ListenerAdapter
                 //update the event fields as neccessary
                 break;
             case "attendEvent":
+                //identify selected meetingEvent
                 tbd = identifyMeeting(
                   channelId,
                   Integer.valueOf(event.getSelectedOptions().get(0).getValue())
                 );
-                if(tbd.addAttendee(event.getUser()))
+                //if the user can be added to the event.(is not already attending)
+                if(tbd.addAttendee(userId))
                 {
                     event.getMessageChannel().sendMessage(String.format("You are now attending %s", tbd.getName())).queue();
                 }else
@@ -284,7 +287,7 @@ public class WeeklyBot extends ListenerAdapter
                   channelId,
                   Integer.valueOf(event.getSelectedOptions().get(0).getValue())
                 );
-                if(tbd.removeAttendee(event.getUser()))
+                if(tbd.removeAttendee(userId))
                 {
                     event.getMessageChannel().sendMessage(String.format("You are no longer attending %s", tbd.getName())).queue();
                 }else

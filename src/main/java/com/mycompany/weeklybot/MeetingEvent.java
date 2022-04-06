@@ -39,7 +39,7 @@ public class MeetingEvent
     private final JDA jda;
     private final ScheduledExecutorService scheduler = new ScheduledThreadPoolExecutor(1);
     private ScheduledFuture<Void> nextFuture;
-    private DateTimeFormatter sdf = DateTimeFormatter.ofPattern("MM/dd/YY '@' hh:mm a z");
+    private final DateTimeFormatter sdf = DateTimeFormatter.ofPattern("MM/dd/YY '@' hh:mm a z");
 
     protected class HostEvent implements Callable<Void>
     {
@@ -101,18 +101,18 @@ public class MeetingEvent
         logger.info(String.format("%s scheduled after %d seconds, with a(n) %d day interval", name, initialDelay, interval));
     }
 
-    public boolean addAttendee( User user )
+    public boolean addAttendee( String userId )
     {
-        String id = user.getId();
-        if(!attendeeIds.contains(id))
-            return attendeeIds.add(id);
+        //TODO:add check for valid userId.
+        if(!attendeeIds.contains(userId))
+            return attendeeIds.add(userId);
         else
             return false;
     }
 
-    public boolean removeAttendee( User user )
+    public boolean removeAttendee( String userId)
     {
-        return attendeeIds.remove(user.getId());
+        return attendeeIds.remove(userId);
     }
 
     public boolean cancelEvent()
