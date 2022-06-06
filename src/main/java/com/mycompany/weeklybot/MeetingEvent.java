@@ -1,7 +1,6 @@
 package com.mycompany.weeklybot;
 
 
-import java.util.Calendar;
 import java.util.concurrent.*;
 import java.util.ArrayList;
 import java.util.Objects;
@@ -10,7 +9,6 @@ import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.entities.MessageChannel;
 import net.dv8tion.jda.api.entities.Message.MentionType;
 import net.dv8tion.jda.api.MessageBuilder;
-import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.entities.User;
 
 import java.util.logging.*;
@@ -26,6 +24,7 @@ import java.time.temporal.ChronoUnit;
  */
 public class MeetingEvent
 {
+    public static enum FEILD_NAMES {MONTH,DAY,YEAR,HOUR,MINUTE,TIME_ZONE,INTERVAL}
     private String name;
     private final ZonedDateTime nextDate;
     private final int intervalDays;
@@ -110,15 +109,33 @@ public class MeetingEvent
         return attendeeIds.remove(userId);
     }
 
-    public boolean cancelEvent()
+    public boolean cancelEvent(boolean isSilent)
     {
-        MessageBuilder messageBuilder = new MessageBuilder();
-        jda.getChannelById(MessageChannel.class, channelId).sendMessage(
-          notifyAttendees(messageBuilder, "canceled").build()
-        ).queue();
+        if ( !isSilent )
+        {
+            MessageBuilder messageBuilder = new MessageBuilder();
+            jda.getChannelById(MessageChannel.class, channelId).sendMessage(
+              notifyAttendees(messageBuilder, "canceled").build()
+            ).queue();
+        }
         return nextFuture.cancel(true);
     }
-
+    
+    public boolean updateEventField(String field,int val,boolean isSilent)
+    {
+        
+        if(!nextFuture.cancel(true))
+            return false;
+        if ( !isSilent )
+        {
+            MessageBuilder messageBuilder = new MessageBuilder();
+            jda.getChannelById(MessageChannel.class, channelId).sendMessage(
+              notifyAttendees(messageBuilder, "updated").build()
+            ).queue();
+        }
+        return true;
+    }
+    
     public MessageBuilder notifyAttendees( MessageBuilder messageBuilder, String action )
     {
         messageBuilder.allowMentions(MentionType.USER);
@@ -157,11 +174,12 @@ public class MeetingEvent
     }
 
     @Override
+    //hash code to exclude volatile fields
     public int hashCode()
     {
         final int prime = 31;
         return ( ( ( ( name.hashCode() * prime ) + intervalDays ) * prime + channelId.hashCode() ) *
-          prime + ( int ) nextFuture.getDelay(TimeUnit.MINUTES) ) * prime;
+          prime + ( int ) nextDate.toEpochSecond() ) * prime;
     }
 
     @Override
@@ -192,7 +210,7 @@ public class MeetingEvent
         {
             return false;
         }
-        if ( !Objects.equals(this.nextFuture, other.nextFuture) )
+        if ( !Objects.equals(this.nextDate, other.nextDate) )
         {
             return false;
         }

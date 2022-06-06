@@ -26,10 +26,6 @@ import java.util.*;
 
 import java.io.*;
 
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-
 import java.util.concurrent.ConcurrentHashMap;
 
 import java.time.*;
@@ -40,21 +36,23 @@ import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoField;
 import java.time.temporal.TemporalField;
 import java.time.temporal.ValueRange;
+import java.time.zone.ZoneRulesException;
 
 import static net.dv8tion.jda.api.interactions.commands.OptionType.*;
 
-/* TODO: 
+/* TODO:
+ *
  * updateEvent command
- * 
+ *
  * proposeBan command
  * proposeUnban command
- *  
+ *
  * RSSSub command
  * RSSUnsub command
  * RSSUpdateFilter command
  *
  * validateDeck
- * 
+ *
  * @author Gary Howard
  */
 public class WeeklyBot extends ListenerAdapter
@@ -66,10 +64,10 @@ public class WeeklyBot extends ListenerAdapter
             super(s, s);
         }
     }
-    
-    private final ConcurrentHashMap<String, List<MeetingEvent>> meetingMap = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, List<SimpleRSSSubscriber>> rssMap = new ConcurrentHashMap<>();
+
+    private static MapManager mapMan;
     private static Logger logger = Logger.getGlobal();
+
     /**
      * @param args the command line arguments
      *
@@ -78,9 +76,9 @@ public class WeeklyBot extends ListenerAdapter
      */
     public static void main( String[] args ) throws LoginException, FileNotFoundException, IOException
     {
-        
+
         SimpleFormatter formatter = new SimpleFormatter();
-        StreamHandler handler = new StreamHandler(System.out,formatter);
+        StreamHandler handler = new StreamHandler(System.out, formatter);
         handler.setLevel(Level.INFO);
         logger.addHandler(handler);
         FileReader fin = new FileReader("./src/main/resources/config.txt");//read bot token from config.txt
@@ -93,23 +91,24 @@ public class WeeklyBot extends ListenerAdapter
           .setActivity(Activity.watching("You..."))
           .build();
 
+        mapMan = new MapManager(jda);
+
         // These commands take up to an hour to be activated after creation/update/delete
         CommandListUpdateAction commands = jda.updateCommands();
 
         // Simple reply commands
         commands.addCommands(
           Commands.slash("say", "Makes the bot say what you tell it to")
-            .addOption(STRING, "content", "What the bot should say", true) // you can add required options like this too
+            .addOption(STRING, "content", "What the bot should say", true)
         );
 
-        // Commands without any inputs
         commands.addCommands(
           Commands.slash("leave", "Make the bot leave the server")
         );
 
         commands.addCommands(
           Commands.slash("prune", "Prune messages from this channel")
-            .addOption(INTEGER, "amount", "How many messages to prune (Default 100)") // simple optional argument
+            .addOption(INTEGER, "amount", "How many messages to prune (Default 100)")
         );
 
         commands.addCommands(Commands.slash("create", "Creates a recurring event")
@@ -123,13 +122,23 @@ public class WeeklyBot extends ListenerAdapter
           .addOption(INTEGER, "interval", "the interval in days between event occurances", false)//default 7 days
         );
 
-        commands.addCommands(Commands.slash("update", "Update an existing recurring event")
+        commands.addCommands(Commands.slash("update", "Update an existing recurring event")//defaults to no modification.
+          .addOption(STRING, "name", "The name of the event", false)
+          .addOption(INTEGER, "month", "month of the next occurence of the event", false)
+          .addOption(INTEGER, "day", "day of the next occurence of the event", false)
+          .addOption(INTEGER, "year", "year of the next occurence of the event", false)
+          .addOption(INTEGER, "hour", "the time at which the event occurs hour", false)
+          .addOption(INTEGER, "minute", "Minute of the event", false)
+          .addOption(STRING, "timezone", "Event Timezone", false)
+          .addOption(INTEGER, "interval", "the interval in days between event occurances", false)
         );
 
         commands.addCommands(Commands.slash("delete", "Deletes an existing recurring event")
         );
-        commands.addCommands(Commands.slash("attend", "add yourself to the attendee list for an event!"));
-        commands.addCommands(Commands.slash("unattend", "remove yourself from the attendee list for an event."));
+        commands.addCommands(Commands.slash("attend",
+          "add yourself to the attendee list for an event!"));
+        commands.addCommands(Commands.slash("unattend",
+          "remove yourself from the attendee list for an event."));
 
         /* subscribe to an RSS feed.
          * the bot will post updates from that feed that match the specified filter every *N*
@@ -140,7 +149,7 @@ public class WeeklyBot extends ListenerAdapter
         commands.addCommands(Commands.slash("rsssub",
           "Subscribes to an RSS feed in the given channel with a filter")
           .addOption(STRING, "url", "the RSS url")
-          .addOption(CHANNEL, "channel", "the channel to post updates to",false) // default current channel
+          .addOption(CHANNEL, "channel", "the channel to post updates to", false) // default current channel
           .addOption(BOOLEAN, "isblacklist",
             "whether the subsequent filter string is a blacklist",
             false)//default false.(treats the subsequent filter as a whitelist) 
@@ -162,7 +171,7 @@ public class WeeklyBot extends ListenerAdapter
             false)
           .addOption(STRING, "filter", "a list of words to filter for", false)
         );
-        
+
         commands.addCommands(Commands.slash("now", "tells you the current date and time."));
 
         // Send the new set of commands to discord, this will override any existing global commands with the new set provided here
@@ -181,7 +190,7 @@ public class WeeklyBot extends ListenerAdapter
         switch ( event.getName() )
         {
             case "say":
-                say(event, event.getOption("content").getAsString()); 
+                say(event, event.getOption("content").getAsString());
                 break;
             case "now":
                 now(event);
@@ -189,7 +198,7 @@ public class WeeklyBot extends ListenerAdapter
             case "leave":
                 leave(event);
                 break;
-            case "prune": 
+            case "prune":
                 prune(event);
                 break;
             case "create":
@@ -209,6 +218,7 @@ public class WeeklyBot extends ListenerAdapter
                 break;
             case "rsssub":
             case "rssunsub":
+            case "rssupdatefilter":
             default:
                 event.reply("I can't handle that command right now :(").setEphemeral(true).queue();
         }
@@ -228,61 +238,76 @@ public class WeeklyBot extends ListenerAdapter
         {
             return;
         }
-        
+
         event.deferEdit().queue();
-        
+
         switch ( type )
         {
             case "deleteEvent":
-                //identify meeting to be deleted
-                tbd = identifyMeeting(
+                mapMan.deleteEvent(
                   channelId,
-                  Integer.valueOf(event.getSelectedOptions().get(0).getValue())
-                );                
-                //notify attendees of deletion
-                //cancel next occurence of event
-                tbd.cancelEvent();
-                //remove event from meetingMap
-                meetingMap.get(channelId).remove(tbd);
+                  Integer.valueOf(event.getSelectedOptions().get(0).getValue()));
                 break;
             case "updateEvent":
-                //identify meeting to be updated
-                tbd = identifyMeeting(
-                  channelId,
-                  Integer.valueOf(event.getSelectedOptions().get(0).getValue())
-                );
-                event.getMessageChannel().sendMessage("Update not currently supported.").queue();
                 //determine updates to make to the event.
-                //multiple selct menus...
-                //notify attendees of update
+                //name,month,day,year,hour,min,tz,interval
+                tbd = mapMan.identifyMeeting(
+                  channelId,
+                  Integer.valueOf(event.getSelectedOptions().get(0).getValue()));
+                event.reply(String.format("Select field to update for %s:", tbd.getName()))
+                  .addActionRow(
+                    eventPropertySelection(String.format("%s:updateField(s):%s", userId, tbd.hashCode())))
+                  .queue(); 
                 //update the event fields as neccessary
                 break;
             case "attendEvent":
                 //identify selected meetingEvent
-                tbd = identifyMeeting(
+                tbd = mapMan.identifyMeeting(
                   channelId,
                   Integer.valueOf(event.getSelectedOptions().get(0).getValue())
                 );
                 //if the user can be added to the event.(is not already attending)
-                if(tbd.addAttendee(userId))
+                if ( tbd.addAttendee(userId) )
                 {
-                    event.getMessageChannel().sendMessage(String.format("You are now attending %s", tbd.getName())).queue();
-                }else
+                    event.getMessageChannel().sendMessage(
+                      String.format("%s, You are now attending %s",
+                        User.fromId(userId).getName(),
+                        tbd.getName()
+                      )
+                    ).queue();
+                }
+                else
                 {
-                    event.getMessageChannel().sendMessage(String.format("You were already attending %s", tbd.getName())).queue();
+                    event.getMessageChannel().sendMessage(
+                      String.format("%s, You were already attending %s",
+                        User.fromId(userId).getName(),
+                        tbd.getName()
+                      )
+                    ).queue();
                 }
                 break;
             case "unattendEvent":
-                tbd = identifyMeeting(
+                tbd = mapMan.identifyMeeting(
                   channelId,
                   Integer.valueOf(event.getSelectedOptions().get(0).getValue())
                 );
-                if(tbd.removeAttendee(userId))
+                if ( tbd.removeAttendee(userId) )
                 {
-                    event.getMessageChannel().sendMessage(String.format("You are no longer attending %s", tbd.getName())).queue();
-                }else
+                    event.getMessageChannel().sendMessage(
+                      String.format("%s, You are no longer attending %s",
+                        User.fromId(userId).getName(),
+                        tbd.getName()
+                      )
+                    ).queue();
+                }
+                else
                 {
-                    event.getMessageChannel().sendMessage(String.format("You were not attending %s", tbd.getName())).queue();
+                    event.getMessageChannel().sendMessage(
+                      String.format("%s, You were not attending %s",
+                        User.fromId(userId).getName(),
+                        tbd.getName()
+                      )
+                    ).queue();
                 }
                 break;
             case "updateRSSFilter":
@@ -328,8 +353,8 @@ public class WeeklyBot extends ListenerAdapter
     {
         event.reply(content).queue(); // This requires no permissions!
     }
-    
-    public void now(SlashCommandInteractionEvent event)
+
+    public void now( SlashCommandInteractionEvent event )
     {
         DateTimeFormatter sdf = DateTimeFormatter.ofPattern("MM/dd/YY '@' hh:mm a z");
         event.reply(sdf.format(ZonedDateTime.now())).queue();
@@ -343,18 +368,19 @@ public class WeeklyBot extends ListenerAdapter
         }
         else
         {
+            //Clean meetingMap and rssMap for server.
+            mapMan.clearServer(event.getGuild().getIdLong());
             event.reply("Leaving the server... :wave:") // Yep we received it
               .flatMap(v -> event.getGuild().leave()) // Leave server after acknowledging the command
               .queue();
-            //Clean meetingMap and rssMap for server.
         }
     }
 
     public void prune( SlashCommandInteractionEvent event )
     {
-        int amount = (int)enforceOption(event.getOption("amount"),2,200,100); // enforcement: must be between 2-200
+        int amount = ( int ) enforceOption(event.getOption("amount"), 2, 200, 100); // enforcement: must be between 2-200
         String userId = event.getUser().getId();
-        event.reply(String.format("This will delete %d messages.\nAre you sure?",amount)) // prompt the user with a button menu
+        event.reply(String.format("This will delete %d messages.\nAre you sure?", amount)) // prompt the user with a button menu
           .addActionRow(
             Button.secondary(userId + ":delete", "Nevermind!"),
             Button.danger(userId + ":prune:" + amount, "Yes!")) // the first parameter is the component id we use in onButtonInteraction above
@@ -366,60 +392,52 @@ public class WeeklyBot extends ListenerAdapter
      */
     public void create( SlashCommandInteractionEvent event )
     {
-        List<MeetingEvent> eventList;
         String channelId = event.getMessageChannel().getId();
-        if ( meetingMap.containsKey(channelId) )
-        {
-            eventList = meetingMap.get(channelId);
-        }
-        else
-        {
-            eventList = Collections.synchronizedList(new ArrayList<>());
-            meetingMap.put(channelId, eventList);
-        }
+        //name
+        String name = event.getOption("name").getAsString();
 
-        synchronized ( eventList )
+        OptionMapping tzOption = event.getOption("timezone");
+        try
         {
-            if ( eventList.size() < 25 )
+            ZoneId tz = ZoneId.of(
+              tzOption == null ? "America/New_York" : tzOption.getAsString()
+            );
+
+            LocalDateTime ldt = LocalDateTime.now();
+            ZonedDateTime zdt = ldt.atZone(tz);
+            //month,day,hour,tz,intervalDays
+            zdt = zdt.withYear(( int ) enforceZDTOption(event.getOption("year"), zdt,
+              ChronoField.YEAR));
+
+            zdt = zdt.withMonth(( int ) enforceZDTOption(event.getOption("month"), zdt,
+              ChronoField.MONTH_OF_YEAR));
+
+            zdt = zdt.withDayOfMonth(( int ) enforceZDTOption(event.getOption("day"), zdt,
+              ChronoField.DAY_OF_MONTH));
+
+            zdt = zdt.withHour(( int ) enforceZDTOption(event.getOption("hour"), zdt,
+              ChronoField.HOUR_OF_DAY));
+
+            zdt = zdt.withMinute(( int ) enforceZDTOption(event.getOption("minute"), zdt,
+              ChronoField.MINUTE_OF_HOUR));
+
+            int interval = ( int ) enforceOption(event.getOption("interval"), 1, 365, 7);
+            logger.info(
+              String.format(
+                "%s to be scheduled %s with %d interval",
+                name,
+                zdt.format(DateTimeFormatter.ISO_ZONED_DATE_TIME),
+                interval
+              ));
+            MessageChannel channel = event.getChannel();
+            MeetingEvent meeting = new MeetingEvent(
+              name,
+              interval,
+              zdt,
+              channel,
+              event.getJDA());
+            if ( mapMan.addMeeting(meeting, channelId) )
             {
-                //name
-                String name = event.getOption("name").getAsString();
-                
-                OptionMapping tzOption = event.getOption("timezone");
-                
-                ZoneId tz = ZoneId.of(
-                  tzOption == null ? "America/New_York" : tzOption.getAsString()
-                );
-                LocalDateTime ldt = LocalDateTime.now();
-                ZonedDateTime zdt = ldt.atZone(tz);
-                //month,day,hour,tz,intervalDays
-                zdt=zdt.withYear((int)enforceZDTOption(event.getOption("year"), zdt, ChronoField.YEAR));
-                
-                zdt=zdt.withMonth((int)enforceZDTOption(event.getOption("month"), zdt, ChronoField.MONTH_OF_YEAR));
-                
-                zdt = zdt.withDayOfMonth((int)enforceZDTOption(event.getOption("day"), zdt, ChronoField.DAY_OF_MONTH));
-                
-                zdt = zdt.withHour((int)enforceZDTOption(event.getOption("hour"), zdt, ChronoField.HOUR_OF_DAY));
-                
-                zdt = zdt.withMinute((int)enforceZDTOption(event.getOption("minute"), zdt, ChronoField.MINUTE_OF_HOUR));
-                                
-                int interval = (int)enforceOption(event.getOption("interval"), 1, 365, 7);
-                logger.info(
-                  String.format(
-                    "%s to be scheduled %s with %d interval",
-                    name,
-                    zdt.format(DateTimeFormatter.ISO_ZONED_DATE_TIME),
-                    interval
-                    ));
-                MessageChannel channel = event.getChannel();
-                MeetingEvent meeting = new MeetingEvent(
-                  name,
-                  interval,
-                  zdt,
-                  channel,
-                  event.getJDA());
-                eventList.add(meeting);
-               
                 event.reply(
                   String.format(
                     "%s created %s \noccuring every %d days",
@@ -435,6 +453,18 @@ public class WeeklyBot extends ListenerAdapter
                   true).queue();
             }
         }
+        catch ( ZoneRulesException ex )
+        {
+            event.reply(
+              String.format("failed to create event.\n%s is not a valid timezone\n%s", tzOption, ex.
+                getMessage())
+            ).queue();
+        }
+        catch ( DateTimeException ex )
+        {
+            event.reply("failed to create event(other dt execption).\n" + ex.getMessage()).queue();
+        }
+
     }
 
     public void update( SlashCommandInteractionEvent event )
@@ -447,27 +477,25 @@ public class WeeklyBot extends ListenerAdapter
         createEventListMenu(event, "delete");
     }
 
-    public void attend(SlashCommandInteractionEvent event)
+    public void attend( SlashCommandInteractionEvent event )
     {
         createEventListMenu(event, "attend");
     }
-    
-    public void unattend(SlashCommandInteractionEvent event)
+
+    public void unattend( SlashCommandInteractionEvent event )
     {
         createEventListMenu(event, "unattend");
     }
-    
-    
-    
+
     /*
      * Creates and sends a select menu message for the given action.
      */
     private void createEventListMenu( GenericCommandInteractionEvent event, String actionString )
     {
         String channelId = event.getMessageChannel().getId();
-        if ( meetingMap.containsKey(channelId) && !meetingMap.get(channelId).isEmpty())
+        List<MeetingEvent> eventList = mapMan.listChannelEvents(channelId);
+        if ( !eventList.isEmpty() )
         {
-            List<MeetingEvent> eventList = meetingMap.get(channelId);
             String userId = event.getUser().getId();
             event.reply(String.format("Select event to %s:", actionString))
               .addActionRow(eventListSelection(String.format("%s:%sEvent", userId, actionString),
@@ -480,7 +508,7 @@ public class WeeklyBot extends ListenerAdapter
         }
     }
 
-    /* 
+    /*
      * Creates a select menu for all events in the given list.
      */
     private SelectMenu eventListSelection( String name, List<MeetingEvent> eventList )
@@ -492,43 +520,52 @@ public class WeeklyBot extends ListenerAdapter
         {
             eventList.forEach(meetingEvent ->
             {
-                eventMenuBuilder.addOption(meetingEvent.getName(), String.valueOf(meetingEvent.hashCode()));
+                eventMenuBuilder.addOption(meetingEvent.getName(), String.valueOf(meetingEvent.
+                  hashCode()));
             });
         }
         return eventMenuBuilder.build();
     }
-        
-    private long enforceZDTOption( OptionMapping option, ZonedDateTime zdt, TemporalField field)
+
+    private SelectMenu eventPropertySelection( String name )
+    {
+        SelectMenu.Builder mb = SelectMenu.create(name)
+          .setRequiredRange(0, 8)
+          .setPlaceholder("Select one or more");
+        List<String> ls = Arrays.
+          asList("name", "month", "day", "year", "hour", "minute", "timezone", "interval");
+        ls.forEach(field -> mb.addOption(field, field));
+        return mb.build();
+    }
+
+    private long enforceZDTOption( OptionMapping option, ZonedDateTime zdt, TemporalField field )
     {
         ValueRange range = zdt.range(field);
         return enforceOption(option, range.getMinimum(), range.getMaximum(), zdt.get(field));
     }
-    
 
     private long enforceOption( OptionMapping option, long min, long max, long base )
     {
         logger.info(
           String.format(
             "%s == null ? %d : Math.min(%d, Math.max(%d, %d))",
-            option == null ? null:option,
+            option == null ? null : option,
             base,
             max,
             min,
-            option == null ? null:option.getAsInt()
-            )
+            option == null ? null : option.getAsInt()
+          )
         );
         return option == null ? base : Math.min(max, Math.max(min, option.getAsInt()));
     }
-    
-    private MeetingEvent identifyMeeting(String channelId,int meetingId)
+
+    private String menuName( String[] args )
     {
-        for(MeetingEvent meeting:meetingMap.get(channelId))
+        String name = "";
+        for ( String arg : args )
         {
-            if(meeting.hashCode()==meetingId)
-            {
-                return meeting;
-            }
+            name += ( arg + ":" );
         }
-        return null;
+        return name.substring(0, name.length() - 1);
     }
 }
